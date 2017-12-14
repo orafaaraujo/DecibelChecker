@@ -1,6 +1,5 @@
 package com.orafaaraujo.decibelsensor.decibel;
 
-import android.annotation.SuppressLint;
 import android.support.annotation.CheckResult;
 import android.util.Log;
 
@@ -26,6 +25,8 @@ public class DecibelCheck {
     private DecibelSensor mDecibelSensor;
 
     public DecibelCheck() {
+        Log.d(TAG, "DecibelCheck() called");
+
         mDecibelSensor = new DecibelSensor();
         mPublishSubject = PublishSubject.create();
     }
@@ -36,27 +37,26 @@ public class DecibelCheck {
         if (!mIsRunning) {
             mDecibelSensor
                     .startObserving()
-                    .buffer(TIME_INTERVAL, TIME_UNIT)
                     .subscribeOn(Schedulers.io())
                     .observeOn(AndroidSchedulers.mainThread())
-                    .subscribe(this::makeAverage, this::showError, this::showCompleted);
+                    .subscribe(this::makeAverage, this::showError);
             mIsRunning = true;
         }
         return mPublishSubject;
     }
 
     public void stop() {
-        Log.d(TAG, "stop() called mIsRunning=" + mIsRunning);
-        if (mIsRunning) {
-            mDecibelSensor.stopObserving();
-            mIsRunning = false;
+        Log.d(TAG, "stop() called " + mIsRunning);
 
+        if (mIsRunning) {
+            mIsRunning = false;
+            mDecibelSensor.stopObserving();
             mPublishSubject.onComplete();
         }
     }
 
     private void makeAverage(List<Integer> decibelList) {
-        Log.d(TAG, "makeAverage: " + decibelList);
+        Log.d(TAG, "makeAverage() called with: decibelList = [" + decibelList + "]");
 
         final OptionalDouble average = decibelList
                 .stream()
@@ -69,12 +69,13 @@ public class DecibelCheck {
             if (intAverage < DECIBEL_THRESHOLD) {
                 logAverage();
                 mPublishSubject.onNext(true);
+                mPublishSubject.onComplete();
             }
         });
     }
 
-    private void logAverage(Integer decibelData) {
-        Log.d(TAG, "Decibel average: " + decibelData);
+    private void logAverage(Integer decibelAverage) {
+        Log.d(TAG, "Decibel average = [" + decibelAverage + "]");
     }
 
     private void logAverage() {
@@ -82,10 +83,9 @@ public class DecibelCheck {
     }
 
     private void showError(Throwable throwable) {
-        Log.e(TAG, "Decibel check error: " + throwable.getLocalizedMessage());
+        Log.e(TAG, "Decibel check error = [" + throwable.getLocalizedMessage() + "]");
     }
 
-    @SuppressLint("SetTextI18n")
     private void showCompleted() {
         Log.i(TAG, "Decibel check completed!");
     }
