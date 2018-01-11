@@ -4,98 +4,105 @@ import android.media.AudioFormat;
 import android.media.AudioRecord;
 import android.media.MediaRecorder;
 import android.support.annotation.CheckResult;
+import android.util.Log;
 
-import java.util.ArrayList;
-import java.util.List;
-import java.util.concurrent.TimeUnit;
+import org.jetbrains.annotations.Contract;
 
-import io.reactivex.Observable;
-import io.reactivex.Single;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicBoolean;
+
 import io.reactivex.subjects.PublishSubject;
 
 class DecibelSensor {
 
-    private static final String TAG = "DecibelSensor";
+    private static final String TAG = DecibelSensor.class.getSimpleName();
 
     private static final int SAMPLE_RATE_IN_HZ = 44100;
     private static final int CHANNEL_CONFIG = AudioFormat.CHANNEL_IN_MONO;
     private static final int AUDIO_FORMAT = AudioFormat.ENCODING_PCM_16BIT;
 
-    private static final int TIME_INTERVAL = 3;
-    private static final TimeUnit TIME_UNIT = TimeUnit.SECONDS;
-
     private final int mBytesInBuffer;
+    private final ExecutorService mExecutor;
+    private final AtomicBoolean mRunning = new AtomicBoolean(false);
 
     private AudioRecord mRecord;
+    private PublishSubject<Integer> mStream;
 
     DecibelSensor() {
+        Log.d(TAG, "DecibelSensor() called");
         mBytesInBuffer = AudioRecord
                 .getMinBufferSize(SAMPLE_RATE_IN_HZ, CHANNEL_CONFIG, AUDIO_FORMAT);
+        mExecutor = Executors.newSingleThreadExecutor();
     }
 
     @CheckResult
-    Single<List<Integer>> startObserving() {
+    PublishSubject<Integer> startObserving() {
+        Log.d(TAG, "startObserving() called");
+
+        mStream = PublishSubject.create();
 
         if (mBytesInBuffer < 0) {
-            return sendError("Could not connect to microphone");
+            sendError("Could not connect to microphone");
+            return mStream;
         }
 
+        mRunning.set(true);
         mRecord = new AudioRecord(MediaRecorder.AudioSource.VOICE_COMMUNICATION,
                 SAMPLE_RATE_IN_HZ, CHANNEL_CONFIG, AUDIO_FORMAT, mBytesInBuffer);
 
         if (mRecord.getState() != AudioRecord.STATE_INITIALIZED) {
-            return sendError("startObserving: Could not connect to microphone");
+            sendError("startObserving: Could not connect to microphone");
+            return mStream;
         }
 
         mRecord.startRecording();
         if (mRecord.getRecordingState() != AudioRecord.RECORDSTATE_RECORDING) {
-            return sendError("startObserving: Microphone in use by another application");
+            sendError("startObserving: Microphone in use by another application");
+            return mStream;
         }
 
-        return readRecord();
-    }
+        readRecord();
 
-    private Single<List<Integer>> readRecord() {
-        PublishSubject<List<Integer>> publishSubject = PublishSubject.create();
-
-        publishSubject
-                .flatMap(v -> hearNoise());
-
-        return publishSubject
-                .single(new ArrayList<>());
+        return mStream;
     }
 
     void stopObserving() {
+        Log.d(TAG, "stopObserving() called");
+        mRunning.set(false);
         if (mRecord != null) {
             if (mRecord.getState() == AudioRecord.STATE_INITIALIZED) {
                 mRecord.stop();
             }
             mRecord.release();
         }
+        mStream.onComplete();
 
         mRecord = null;
+        mStream = null;
     }
 
-    private Observable<Integer> hearNoise() {
+    private void readRecord() {
+        Log.d(TAG, "readRecord() called");
+        mExecutor.execute(() -> {
 
-        short[] tempBuffer = new short[mBytesInBuffer];
+            short[] tempBuffer = new short[mBytesInBuffer];
 
-        return Observable
-                .fromCallable(() -> {
-                    int readShorts = mRecord.read(tempBuffer, 0, mBytesInBuffer);
-                    if (readShorts > 0) {
-                        return sendBuffer(tempBuffer, readShorts);
-                    }
-                    return 0;
-                });
+            while (mRunning.get()) {
+                int readShorts = mRecord.read(tempBuffer, 0, mBytesInBuffer);
+                if (readShorts > 0) {
+                    sendBuffer(tempBuffer, readShorts);
+                }
+            }
+        });
     }
 
-    private int sendBuffer(short[] tempBuffer, int readShorts) {
+    private void sendBuffer(short[] tempBuffer, int readShorts) {
         double totalSquared = 0;
 
         for (int i = 0; i < readShorts; i++) {
-            short soundbits = tempBuffer[i];
-            totalSquared += soundbits * soundbits;
+            short soundBits = tempBuffer[i];
+            totalSquared += soundBits * soundBits;
         }
 
         // https://en.wikipedia.org/wiki/Sound_pressure
@@ -103,18 +110,20 @@ class DecibelSensor {
         final double uncalibratedDecibels = 20 * Math.log10(quadraticMeanPressure);
 
         if (isValidReading(uncalibratedDecibels)) {
-            return Double.valueOf(uncalibratedDecibels).intValue();
+            sendData(Double.valueOf(uncalibratedDecibels).intValue());
         }
-        return 0;
     }
 
+    @Contract(pure = true)
     private boolean isValidReading(double reading) {
         return reading > -Double.MAX_VALUE;
     }
 
-    private Single<List<Integer>> sendError(String message) {
-        return Single.fromCallable(() -> {
-            throw new RuntimeException(message);
-        });
+    private void sendData(Integer decibelData) {
+        mStream.onNext(decibelData);
+    }
+
+    private void sendError(String message) {
+        mStream.onError(new Throwable(message));
     }
 }
